@@ -16,10 +16,14 @@ function handleMenuOverflow(node) {
 	function offset(amount) {
 		let top = parseInt(node.style.top);
 		let offset = top - $(node).offset().top;
+		let top_gap = 26;
+		if (Blockbench.isMobile && Menu.open instanceof BarMenu) {
+			top_gap = window.innerHeight > 400 ? 106 : 56;
+		}
 		top = Math.clamp(
 			top + amount,
 			window.innerHeight - node.clientHeight + offset,
-			offset + 26
+			offset + top_gap
 		);
 		node.style.top = `${top}px`;
 	}
@@ -54,12 +58,19 @@ class Menu {
 		}
 		this.id = typeof id == 'string' ? id : '';
 		this.children = [];
-		this.node = document.createElement('ul');
-		this.node.classList.add('contextMenu');
 		this.structure = structure;
 		this.options = options || {};
 		this.onOpen = this.options.onOpen;
 		this.onClose = this.options.onClose;
+		this.node = document.createElement('ul');
+		this.node.classList.add('contextMenu');
+		if (this.options.class) {
+			if (this.options.class instanceof Array) {
+				this.node.classList.add(...this.options.class);
+			} else {
+				this.node.classList.add(this.options.class);
+			}
+		}
 	}
 	hover(node, event, expand) {
 		if (node.classList.contains('focused') && !expand) return;
@@ -93,17 +104,21 @@ class Menu {
 				}
 			}
 
-			let window_height = window.innerHeight - 26;
+			let top_gap = 26;
+			if (Blockbench.isMobile && this instanceof BarMenu) {
+				top_gap = window.innerHeight > 400 ? 106 : 56;
+			}
+			let window_height = window.innerHeight - top_gap;
 
 			if (el_height > window_height) {
 				childlist.css('margin-top', '0').css('top', '0')
-				childlist.css('top', (-childlist.offset().top + 26) + 'px')
+				childlist.css('top', (-childlist.offset().top + top_gap) + 'px')
 				handleMenuOverflow(childlist);
 
 			} else if (offset.top + el_height > window_height) {
-				childlist.css('margin-top', 26-childlist.height() + 'px')
-				if (childlist.offset().top < 26) {
-					childlist.offset({top: 26})
+				childlist.css('margin-top', top_gap-childlist.height() + 'px')
+				if (childlist.offset().top < top_gap) {
+					childlist.offset({top: top_gap})
 				}
 			}
 		}
@@ -306,6 +321,9 @@ class Menu {
 			if (typeof s == 'string' && BarItems[s]) {
 				s = BarItems[s];
 			}
+			if (typeof s === 'function') {
+				s = s(scope_context);
+			}
 			if (!Condition(s.condition, scope_context)) return;
 
 			if (s instanceof Action) {
@@ -380,9 +398,46 @@ class Menu {
 					scope.hover(entry, e);
 				})
 
-			/*} else if (s instanceof NumSlider) {
+			} else if (s instanceof NumSlider) {
+				let item = s;
+				let trigger = {
+					name: item.name,
+					description: item.description,
+					icon: 'code',
+					click() {
+						let settings = {};
+						if (item.settings) {
+							settings = {
+								min: item.settings.min,
+								max: item.settings.max,
+								step: item.settings.step
+							}
+							if (typeof item.settings.interval == 'function') {
+								settings.step = item.settings.interval(event);
+							}
+						}
+						new Dialog(item.id, {
+							title: item.name,
+							width: 360,
+							form: {
+								value: {label: item.name, type: 'number', value: item.get(), ...settings}
+							},
+							onConfirm(result) {
+								if (typeof item.onBefore === 'function') {
+									item.onBefore();
+								}
+								item.change(n => result.value);
+								item.update();
+								if (typeof item.onAfter === 'function') {
+									item.onAfter();
+								}
+							}
+						}).show();
+					}
+				}
+				return getEntry(trigger, parent);
 				
-				let icon = Blockbench.getIconNode(s.icon, s.color);
+				/*let icon = Blockbench.getIconNode(s.icon, s.color);
 				let numeric_input = new Interface.CustomElements.NumericInput(s.id, {
 					value: s.get(),
 					min: s.settings?.min, max: s.settings?.max,
@@ -444,6 +499,7 @@ class Menu {
 				}
 				addEventListeners(entry, 'mouseenter mouseover', (e) => {
 					if (e.target.classList.contains('menu_separator')) return;
+					if (e.target.classList.contains('contextMenu')) return;
 					scope.hover(entry, e);
 				})
 			}
@@ -462,9 +518,13 @@ class Menu {
 		let content_list = typeof this.structure == 'function' ? this.structure(context) : this.structure;
 		populateList(content_list, ctxmenu, this.options.searchable);
 
-		var el_width = ctxmenu.width()
-		var el_height = ctxmenu.height()
-		let window_height = window.innerHeight - 26;
+		let el_width = ctxmenu.width()
+		let el_height = ctxmenu.height()
+		let top_gap = 26;
+		if (Blockbench.isMobile && this instanceof BarMenu) {
+			top_gap = window.innerHeight > 400 ? 106 : 56;
+		}
+		let window_height = window.innerHeight - top_gap;
 
 		if (position && position.clientX !== undefined) {
 			var offset_left = position.clientX
@@ -505,7 +565,7 @@ class Menu {
 				offset_top = window_height - el_height;
 			}
 		}
-		offset_top = Math.max(offset_top, 26);
+		offset_top = Math.max(offset_top, top_gap);
 
 		ctxmenu.css('left', offset_left+'px')
 		ctxmenu.css('top',  offset_top +'px')

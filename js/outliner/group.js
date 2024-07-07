@@ -64,15 +64,15 @@ class Group extends OutlinerNode {
 		Canvas.updateAllBones([this]);
 		return this;
 	}
-	select(event, isOutlinerClick) {
+	select(event, is_outliner_click) {
 		var scope = this;
 		if (Blockbench.hasFlag('renaming') || this.locked) return this;
 		if (!event) event = true
-		if (isOutlinerClick && event.pointerType == 'touch') return;
-		var allSelected = Group.selected === this && selected.length && this.matchesSelection()
+		var allSelected = Group.selected === this && selected.length && this.matchesSelection();
+		let previous_first_selected = Project.selected_elements[0];
 
 		//Clear Old Group
-		if (Group.selected) Group.selected.unselect()
+		if (Group.selected) Group.selected.unselect();
 		if ((event.shiftKey || Pressing.overrides.shift) !== true && (event.ctrlOrCmd || Pressing.overrides.ctrl) !== true) {
 			selected.length = 0
 		}
@@ -88,6 +88,10 @@ class Group extends OutlinerNode {
 			//Select Only Group, unselect Children
 			selected.length = 0
 		} else {
+			// Fix for #2401
+			if (previous_first_selected && previous_first_selected.isChildOf(this)) {
+				selected.push(previous_first_selected);
+			}
 			scope.children.forEach(function(s) {
 				s.selectLow()
 			})
@@ -178,7 +182,13 @@ class Group extends OutlinerNode {
 					elements.push(element)
 				}
 			})
-			Undo.initEdit({elements: elements, outliner: true, selection: true})
+			let animations = [];
+			Animator.animations.forEach(animation => {
+				if (animation.animators && animation.animators[scope.uuid]) {
+					animations.push(animation);
+				}
+			})
+			Undo.initEdit({elements: elements, outliner: true, selection: true, animations})
 		}
 		this.unselect()
 		super.remove();
@@ -189,13 +199,13 @@ class Group extends OutlinerNode {
 		}
 		Animator.animations.forEach(animation => {
 			if (animation.animators && animation.animators[scope.uuid]) {
-				delete animation.animators[scope.uuid];
+				animation.removeAnimator(scope.uuid);
 			}
 			if (animation.selected && Animator.open) {
 				updateKeyframeSelection();
 			}
 		})
-		TickUpdates.selection = true
+		TickUpdates.selection = true;
 		Project.groups.remove(this);
 		delete OutlinerNode.uuids[this.uuid];
 		if (undo) {
@@ -447,6 +457,32 @@ class Group extends OutlinerNode {
 				}
 			}})
 		}},
+		{name: 'menu.cube.texture', icon: 'collections', condition: () => Format.per_group_texture, children() {
+			function applyTexture(texture_value, undo_message) {
+				let affected_groups = Group.all.filter(g => g.selected);
+				Undo.initEdit({outliner: true});
+				for (let group of affected_groups) {
+					group.texture = texture_value;
+				}
+				Undo.finishEdit(undo_message);
+				Canvas.updateAllFaces();
+			}
+			let arr = [
+				{icon: 'crop_square', name: Format.single_texture_default ? 'menu.cube.texture.default' : 'menu.cube.texture.blank', click(group) {
+					applyTexture('', 'Unassign texture from group');
+				}}
+			]
+			Texture.all.forEach(t => {
+				arr.push({
+					name: t.name,
+					icon: (t.mode === 'link' ? t.img : t.source),
+					click(group) {
+						applyTexture(t.uuid, 'Apply texture to group');
+					}
+				})
+			})
+			return arr;
+		}},
 		{icon: 'sort_by_alpha', name: 'menu.group.sort', condition: {modes: ['edit']}, click: function(group) {group.sortContent()}},
 		'apply_animation_preset',
 		'add_locator',
@@ -479,8 +515,9 @@ new Property(Group, 'vector', 'rotation');
 new Property(Group, 'string', 'bedrock_binding', {condition: {formats: ['bedrock']}});
 new Property(Group, 'array', 'cem_animations', {condition: {formats: ['optifine_entity']}});
 new Property(Group, 'boolean', 'cem_attach', {condition: {formats: ['optifine_entity']}});
+new Property(Group, 'number', 'cem_scale', {condition: {formats: ['optifine_entity']}});
 new Property(Group, 'string', 'texture', {condition: {formats: ['optifine_entity']}});
-new Property(Group, 'vector2', 'texture_size', {condition: {formats: ['optifine_entity']}});
+//new Property(Group, 'vector2', 'texture_size', {condition: {formats: ['optifine_entity']}});
 new Property(Group, 'vector', 'skin_original_origin', {condition: {formats: ['skin']}});
 new Property(Group, 'number', 'color');
 
@@ -579,12 +616,14 @@ BARS.defineActions(function() {
 		keybind: new Keybind({key: 'g', ctrl: true, shift: true}),
 		click: function () {
 			Undo.initEdit({outliner: true});
-			var add_group = Group.selected
+			let add_group = Group.selected
 			if (!add_group && Outliner.selected.length) {
 				add_group = Outliner.selected.last()
 			}
-			var base_group = new Group({
-				origin: add_group ? add_group.origin : undefined
+			let new_name = add_group?.name;
+			let base_group = new Group({
+				origin: add_group ? add_group.origin : undefined,
+				name: ['cube', 'mesh'].includes(new_name) ? undefined : new_name
 			})
 			base_group.sortInBefore(add_group);
 			base_group.isOpen = true

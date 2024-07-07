@@ -264,7 +264,7 @@ const Painter = {
 		let texture = Painter.current.texture;
 
 		if (Toolbox.selected.brush && Toolbox.selected.brush.onStrokeEnd) {
-			let result = Toolbox.selected.brush.onStrokeEnd({texture, x, y, uv, event, raycast_data: data});
+			let result = Toolbox.selected.brush.onStrokeEnd({texture});
 			if (result == false) return;
 		}
 		if (Painter.brushChanges) {
@@ -285,6 +285,7 @@ const Painter = {
 		delete Painter.current.texture;
 		delete Painter.current.textures;
 		delete Painter.current.uv_rects;
+		delete Painter.current.uv_islands;
 		Painter.painting = false;
 		Painter.currentPixel = [-1, -1];
 	},
@@ -331,6 +332,7 @@ const Painter = {
 					let island = Painter.getMeshUVIsland(Painter.current.face, current_face);
 					island.forEach(fkey => {
 						let face = Mesh.selected[0].faces[fkey];
+						if (!face) return;
 						for (let vkey in face.uv) {
 							min_x = Math.min(min_x, face.uv[vkey][0]); max_x = Math.max(max_x, face.uv[vkey][0]);
 							min_y = Math.min(min_y, face.uv[vkey][1]); max_y = Math.max(max_y, face.uv[vkey][1]);
@@ -539,17 +541,18 @@ const Painter = {
 			})
 			var scan_value = true;
 			if (fill_mode === 'color_connected') {
-				function checkPx(x, y) {
-					if (map[x] && map[x][y]) {
-						map[x][y] = false;
-
-						checkPx(x+1, y)
-						checkPx(x-1, y)
-						checkPx(x, y+1)
-						checkPx(x, y-1)
+				let points = [[x, y]];
+				for (let i = 0; i < 1_000_000; i++) {
+					let current_points = points;
+					points = [];
+					for (let [x, y] of current_points) {
+						if (map[x] && map[x][y]) {
+							map[x][y] = false;
+							points.push([x+1, y], [x-1, y], [x, y+1], [x, y-1]);
+						}
 					}
+					if (points.length == 0) break;
 				}
-				checkPx(x, y, 0, 0);
 				scan_value = false;
 			}
 			Painter.scanCanvas(ctx, rect[0], rect[1], w, h, (x, y, px) => {
@@ -1291,6 +1294,7 @@ const Painter = {
 		BarItems.slider_brush_size.update()
 		BarItems.slider_brush_softness.update()
 		BarItems.slider_brush_opacity.update()
+		BarItems.slider_color_select_threshold.update()
 	},
 	getBlendModeCompositeOperation(input = BarItems.blend_mode.value) {
 		switch (input) {
@@ -1641,14 +1645,14 @@ const Painter = {
 					difference: 'action.blend_mode.difference',
 				}},
 				use_size: {label: 'action.slider_brush_size', description: 'action.slider_brush_size.desc', type: 'checkbox'},
-				size: {label: ' ', nocolon: true, description: 'action.slider_brush_size.desc', type: 'number', condition: form => form.use_size, value: 1, min: 1, max: 100},
+				size: {label: '', nocolon: true, description: 'action.slider_brush_size.desc', type: 'number', condition: form => form.use_size, value: 1, min: 1, max: 100},
 				use_opacity: {label: 'action.slider_brush_opacity', description: 'action.slider_brush_opacity.desc', type: 'checkbox'},
-				opacity: {label: ' ', nocolon: true, description: 'action.slider_brush_opacity.desc', type: 'number', condition: form => form.use_opacity, value: 255, min: 0, max: 255},
+				opacity: {label: '', nocolon: true, description: 'action.slider_brush_opacity.desc', type: 'number', condition: form => form.use_opacity, value: 255, min: 0, max: 255},
 				use_softness: {label: 'action.slider_brush_softness', description: 'action.slider_brush_softness.desc', type: 'checkbox'},
-				softness: {label: ' ', nocolon: true, description: 'action.slider_brush_softness.desc', type: 'number', condition: form => form.use_softness, value: 0, min: 0, max: 100},
+				softness: {label: '', nocolon: true, description: 'action.slider_brush_softness.desc', type: 'number', condition: form => form.use_softness, value: 0, min: 0, max: 100},
 				pixel_perfect: {label: 'action.pixel_perfect_drawing', type: 'checkbox'},
 				use_color: {label: 'data.color', type: 'checkbox'},
-				color: {label: ' ', nocolon: true, description: 'action.brush_shape.desc', type: 'color', condition: form => form.use_color},
+				color: {label: '', nocolon: true, description: 'action.brush_shape.desc', type: 'color', condition: form => form.use_color},
 				actions: {type: 'buttons', buttons: ['generic.delete'], click() {
 					dialog.content_vue.removePreset();
 				}}
@@ -1677,7 +1681,11 @@ const Painter = {
 				} else {
 					preset.color = null;
 				}
-				
+				if (form.pixel_perfect) {
+					preset.pixel_perfect = true;
+				} else {
+					preset.pixel_perfect = false;
+				}
 				if (form.shape !== 'unset') {
 					preset.shape = form.shape;
 				} else {
@@ -1984,7 +1992,7 @@ SharedActions.add('copy', {
 			Clipbench.image = {
 				x: offset[0], y: offset[1],
 				frame: texture.currentFrame,
-				data: canvas.toDataURL(),
+				data: canvas.toDataURL('image/png', 1),
 			}
 		} else {
 			let rect = selection.getBoundingRect();
@@ -2000,7 +2008,7 @@ SharedActions.add('copy', {
 				x: rect.start_x,
 				y: rect.start_y,
 				frame: texture.currentFrame,
-				data: copy_canvas.toDataURL()
+				data: copy_canvas.toDataURL('image/png', 1)
 			}
 			canvas = copy_canvas;
 		}
@@ -2049,8 +2057,8 @@ SharedActions.add('paste', {
 			layer.setSize(frame.width, frame.height);
 			layer.ctx.putImageData(image_data, 0, 0);
 			if (!offset) layer.center();
-			texture.layers.push(layer);
-			layer.select();
+
+			layer.addForEditing();
 			layer.setLimbo();
 			texture.updateChangesAfterEdit();
 
@@ -2601,6 +2609,8 @@ BARS.defineActions(function() {
 						selection_tool.setIcon(modes[id].icon);
 						selection_tool.mode = id;
 						selection_tool.select();
+						BARS.updateConditions();
+						BarItems.slider_color_select_threshold.update();
 					}
 				}
 				entries.push(entry);
@@ -2620,6 +2630,7 @@ BARS.defineActions(function() {
 		},
 		onSelect() {
 			UVEditor.vue.updateTexture();
+			BarItems.slider_color_select_threshold.update();
 		},
 		onUnselect() {
 			if (TextureLayer.selected?.in_limbo) {
@@ -2640,7 +2651,7 @@ BARS.defineActions(function() {
 		paintTool: true,
 		allowed_view_modes: ['textured'],
 		modes: ['paint'],
-		keybind: new Keybind({key: 'v'}),
+		keybind: new Keybind({shift: true, key: 'v'}),
 		onCanvasClick(data) {
 			if (data && data.element) {
 				Blockbench.showQuickMessage('message.copy_paste_tool_viewport')
@@ -2936,7 +2947,7 @@ BARS.defineActions(function() {
 	new Toggle('painting_grid', {
 		icon: 'grid_on',
 		category: 'view',
-		condition: () => Modes.paint,
+		condition: {modes: ['paint']},
 		keybind: new Keybind({key: 'g'}),
 		linked_setting: 'painting_grid'
 	})
@@ -2993,5 +3004,16 @@ BARS.defineActions(function() {
 		icon: 'stylus_laser_pointer',
 		category: 'view',
 		condition: () => Toolbox && Toolbox.selected.brush?.pixel_perfect == true,
+	})
+	new NumSlider('slider_color_select_threshold', {
+		category: 'paint',
+		condition: {tools: ['selection_tool'], method: () => ['color', 'wand'].includes(BarItems.selection_tool.mode)},
+		tool_setting: 'color_select_threshold',
+		value: 0,
+		settings: {
+			min: 0, max: 100, default: 0, value: 0,
+			interval: 1,
+			show_bar: true
+		}
 	})
 })

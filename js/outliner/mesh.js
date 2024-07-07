@@ -8,6 +8,9 @@ class MeshFace extends Face {
 			this.extend(data);
 		}
 	}
+	get element() {
+		return this.mesh;
+	}
 	extend(data) {
 		super.extend(data);
 		this.vertices.forEach(key => {
@@ -108,19 +111,29 @@ class MeshFace extends Face {
 				let matrix_x = x-start_offset[0];
 				let matrix_y = y-start_offset[1];
 
-				let inside = ( pointInsidePolygon(x+0.00001, y+0.00001)
-							|| pointInsidePolygon(x+0.99999, y+0.00001)
-							|| pointInsidePolygon(x+0.00001, y+0.99999)
-							|| pointInsidePolygon(x+0.99999, y+0.99999));
+				let inside = ( pointInsidePolygon(x+0.000001, y+0.000001)
+							|| pointInsidePolygon(x+0.999999, y+0.000001)
+							|| pointInsidePolygon(x+0.000001, y+0.999999)
+							|| pointInsidePolygon(x+0.999999, y+0.999999));
 				if (!inside) {
 					let i = 0;
-					let px_rect = [[x, y], [x+0.99999, y+0.99999]]
+					let px_rect = [[x, y], [x+0.999999, y+0.999999]]
 					for (let vkey of sorted_vertices) {
-						let vkey_b = sorted_vertices[i+1] || sorted_vertices[0]
-						if (pointInRectangle(face.uv[vkey], ...px_rect)) {
+						if (!face.uv[vkey]) continue;
+						let uv_a = [
+							face.uv[vkey][0] * factor_x,
+							face.uv[vkey][1] * factor_y,
+						];
+						if (pointInRectangle(uv_a, ...px_rect)) {
 							inside = true; break;
 						}
-						if (lineIntersectsReactangle(face.uv[vkey], face.uv[vkey_b], ...px_rect)) {
+						let vkey_b = sorted_vertices[i+1] || sorted_vertices[0];
+						if (!face.uv[vkey_b]) continue;
+						let uv_b = [
+							face.uv[vkey_b][0] * factor_x,
+							face.uv[vkey_b][1] * factor_y,
+						];
+						if (lineIntersectsReactangle(uv_a, uv_b, ...px_rect)) {
 							inside = true; break;
 						}
 						i++;
@@ -195,6 +208,41 @@ class MeshFace extends Face {
 			return [vertices[0], vertices[2], vertices[1], vertices[3]];
 		}
 		return vertices;
+	}
+	isConcave() {
+		if (this.vertices.length < 4) return false;
+		let {vec1, vec2, vec3, vec4} = Reusable;
+		let normal_vec = vec1.fromArray(this.getNormal(true));
+		let plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+			normal_vec,
+			vec2.fromArray(this.mesh.vertices[this.vertices[0]])
+		)
+		let sorted_vertices = this.getSortedVertices();
+		let rot = cameraTargetToRotation([0, 0, 0], normal_vec.toArray());
+		let e = new THREE.Euler(Math.degToRad(rot[1] - 90), Math.degToRad(rot[0] + 180), 0);
+		
+		let flat_positions = sorted_vertices.map(vkey => {
+			let coplanar_pos = plane.projectPoint(vec3.fromArray(this.mesh.vertices[vkey]), vec4);
+			coplanar_pos.applyEuler(e);
+			return [coplanar_pos.x, coplanar_pos.z];
+		})
+		let angles = [];
+		for (let i = 0; i < sorted_vertices.length; i++) {
+			let a = flat_positions[i];
+			let b = flat_positions[(i+1) % 4];
+			let direction = b.slice().V2_subtract(a);
+			let angle = Math.atan2(direction[1], direction[0]);
+			angles.push(angle);
+		}
+		for (let i = 0; i < sorted_vertices.length; i++) {
+			let a = angles[i];
+			let b = angles[(i+1) % 4];
+			let difference = Math.trimRad(b - a);
+			if (difference > 0) {
+				return sorted_vertices[(i+1) % 4];
+			}
+		}
+		return false;
 	}
 	getEdges() {
 		let vertices = this.getSortedVertices();
@@ -375,7 +423,7 @@ class Mesh extends OutlinerElement {
 	}
 	getWorldCenter(ignore_mesh_selection) {
 		let m = this.mesh;
-		let pos = Reusable.vec1.set(0, 0, 0);
+		let pos = new THREE.Vector3();
 		let vertex_count = 0;
 
 		for (let key in this.vertices) {
@@ -779,8 +827,8 @@ class Mesh extends OutlinerElement {
 		var scope = this;
 		if (faces === true) {
 			var sides = Object.keys(this.faces);
-		} else if (faces === undefined) {
-			var sides = UVEditor.vue.selected_faces
+		} else if (!faces) {
+			var sides = this.getSelectedFaces()
 		} else {
 			var sides = faces
 		}
@@ -834,21 +882,23 @@ class Mesh extends OutlinerElement {
 				}
 			}})
 		}},
-		{name: 'menu.cube.texture', icon: 'collections', condition: () => !Format.single_texture, children: function() {
+		{name: 'menu.cube.texture', icon: 'collections', condition: () => !Format.single_texture, children() {
 			var arr = [
-				{icon: 'crop_square', name: 'menu.cube.texture.blank', click: function(cube) {
-					cube.forSelected(function(obj) {
-						obj.applyTexture(false, true)
+				{icon: 'crop_square', name: Format.single_texture_default ? 'menu.cube.texture.default' : 'menu.cube.texture.blank', click(mesh) {
+					let all_faces = BarItems.selection_mode.value != 'face' || Mesh.selected[0]?.getSelectedFaces().length == 0;
+					mesh.forSelected((obj) => {
+						obj.applyTexture(false, all_faces)
 					}, 'texture blank')
 				}}
 			]
-			Texture.all.forEach(function(t) {
+			Texture.all.forEach((t) => {
 				arr.push({
 					name: t.name,
 					icon: (t.mode === 'link' ? t.img : t.source),
-					click: function(cube) {
-						cube.forSelected(function(obj) {
-							obj.applyTexture(t, true)
+					click(mesh) {
+						let all_faces = BarItems.selection_mode.value != 'face' || Mesh.selected[0]?.getSelectedFaces().length == 0;
+						mesh.forSelected((obj) => {
+							obj.applyTexture(t, all_faces)
 						}, 'apply texture')
 					}
 				})
@@ -1015,9 +1065,7 @@ new NodePreviewController(Mesh, {
 		mesh.outline.geometry.computeBoundingSphere();
 		Mesh.preview_controller.updateHighlight(element);
 
-		if (Modes.paint) {
-			Mesh.preview_controller.updatePaintingGrid(element);
-		}
+		Mesh.preview_controller.updatePixelGrid(element);
 
 		this.dispatchEvent('update_geometry', {element});
 	},
@@ -1117,12 +1165,19 @@ new NodePreviewController(Mesh, {
 				? [tex.getUVWidth(), tex.getUVHeight()]
 				: [Project.texture_width, Project.texture_height];
 
+			let first_values;
 			face.vertices.forEach((key, i) => {
 				let u = (face.uv[key] ? face.uv[key][0] : 0) / uv_size[0];
 				let v = (face.uv[key] ? face.uv[key][1] : 0) / uv_size[1];
 				if (stretch > 1) {
 					v = (v + frame) / stretch;
 				}
+				// Fix grainy visuals when UV all in one point
+				if (!first_values) {
+					first_values = [u, v];
+				} else if (first_values[0] == u && first_values[1] == v) {
+					i < 2 ? u += 0.00005 : v += 0.00005;
+				} 
 				uv_array.push(u, 1-v);
 			})
 		}
@@ -1131,6 +1186,8 @@ new NodePreviewController(Mesh, {
 		mesh.geometry.attributes.uv.needsUpdate = true;
 
 		this.dispatchEvent('update_uv', {element});
+
+		this.updatePixelGrid(element);
 
 		return mesh.geometry;
 	},
@@ -1206,7 +1263,7 @@ new NodePreviewController(Mesh, {
 		mesh.outline.geometry.setAttribute('color', new THREE.Float32BufferAttribute(line_colors, 3));
 		mesh.outline.geometry.needsUpdate = true;
 		
-		mesh.vertex_points.visible = Mode.selected.id == 'edit' && BarItems.selection_mode.value == 'vertex';
+		mesh.vertex_points.visible = (Mode.selected.id == 'edit' && BarItems.selection_mode.value == 'vertex') || Toolbox.selected.id == 'knife_tool';
 
 		this.dispatchEvent('update_selection', {element});
 	},
@@ -1245,13 +1302,15 @@ new NodePreviewController(Mesh, {
 
 		this.dispatchEvent('update_highlight', {element});
 	},
-	updatePaintingGrid(element) {
+	updatePixelGrid(element) {
 		var mesh = element.mesh;
 		if (mesh === undefined) return;
 		mesh.remove(mesh.grid_box);
+		if (mesh.grid_box?.geometry) mesh.grid_box.geometry.dispose();
 		if (element.visibility == false) return;
 
-		if (!Modes.paint || !settings.painting_grid.value) return;
+		let grid_enabled = (Modes.paint && settings.painting_grid.value) || (Modes.edit && settings.pixel_grid.value)
+		if (!grid_enabled) return;
 
 		var positions = [];
 

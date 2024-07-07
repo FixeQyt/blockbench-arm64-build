@@ -107,6 +107,9 @@ function updateSelection(options = {}) {
 			obj.selectLow()
 		} else if ((!included || obj.locked) && obj.selected) {
 			obj.unselect()
+			if (UVEditor.selected_element_faces[obj.uuid]) {
+				delete UVEditor.selected_element_faces[obj.uuid];
+			}
 		}
 		if (obj instanceof Mesh && Project.mesh_selection[obj.uuid]) {
 			if (!included) {
@@ -159,13 +162,6 @@ function updateSelection(options = {}) {
 		if (!Outliner.selected[0] || Outliner.selected[0].type !== 'cube' || Outliner.selected[0].box_uv) {
 			UVEditor.vue.mode = 'uv';
 		}
-	}
-	if (Outliner.selected.length || (Format.single_texture && Modes.paint)) {
-		UVEditor.selected_faces.forEachReverse((fkey, i) => {
-			if (!UVEditor.getMappableElements().find(el => el.faces[fkey])) {
-				UVEditor.selected_faces.splice(i, 1);
-			}
-		})
 	}
 	if (Condition(Panels.uv.condition)) {
 		UVEditor.loadData();
@@ -232,14 +228,156 @@ function unselectAll() {
 }
 
 //Backup
-const AutoBackupModels = {};
+const AutoBackup = {
+	/**
+	 * IndexedDB Database
+	 * @type {IDBDatabase}
+	 */
+	db: null,
+	initialize() {
+		let request = indexedDB.open('auto_backups', 1);
+		request.onerror = function(e) {
+			console.error('Failed to load backup database', e);
+		}
+		request.onblocked = function(e) {
+			console.error('Another instance of Blockbench is opened, the backup database cannot be upgraded at the moment');
+		}
+		request.onupgradeneeded = function() {
+			let db = request.result;
+			let store = db.createObjectStore('projects', {keyPath: 'uuid'});
+
+			// Legacy system
+			let backup_models = localStorage.getItem('backup_model')
+			if (backup_models) {
+				let parsed_backup_models = JSON.parse(backup_models);
+				for (let uuid in parsed_backup_models) {
+					let model = JSON.stringify(parsed_backup_models[uuid]);
+					store.put({uuid, data: model});
+				}
+				console.log(`Upgraded ${Object.keys(parsed_backup_models).length} project back-ups to indexedDB`);
+			}
+		}
+		request.onsuccess = async function() {
+			AutoBackup.db = request.result;
+			
+			// Start Screen Message
+			let has_backups = await AutoBackup.hasBackups();
+			if (has_backups && (!isApp || !currentwindow.webContents.second_instance)) {
+
+				let section = addStartScreenSection('recover_backup', {
+					color: 'var(--color-back)',
+					graphic: {type: 'icon', icon: 'fa-archive'},
+					insert_before: 'start_files',
+					text: [
+						{type: 'h3', text: tl('message.recover_backup.title')},
+						{text: tl('message.recover_backup.message')},
+						{type: 'button', text: tl('message.recover_backup.recover'), click: (e) => {
+							AutoBackup.recoverAllBackups().then(() => {
+								section.delete();
+							});
+						}},
+						{type: 'button', text: tl('dialog.discard'), click: (e) => {
+							AutoBackup.removeAllBackups();
+							section.delete();
+						}}
+					]
+				})
+			}
+		}
+	},
+	async backupOpenProject() {
+		if (!Project) return;
+		let transaction = AutoBackup.db.transaction('projects', 'readwrite');
+		let store = transaction.objectStore('projects');
+
+		let model = Codecs.project.compile({compressed: false, backup: true, raw: false});
+		store.put({uuid: Project.uuid, data: model});
+		
+		await new Promise((resolve) => {
+			transaction.oncomplete = resolve;
+		})
+	},
+	async hasBackups() {
+		let transaction = AutoBackup.db.transaction('projects', 'readonly');
+		let store = transaction.objectStore('projects');
+		return await new Promise(resolve => {
+			let request = store.count();
+			request.onsuccess = function() {
+				resolve(!!request.result);
+			}
+			request.onerror = function(e) {
+				console.error(e);
+				resolve(false);
+			}
+		})
+	},
+	recoverAllBackups() {
+		return new Promise((resolve, reject) => {
+			let transaction = AutoBackup.db.transaction('projects', 'readonly');
+			let store = transaction.objectStore('projects');
+			let request = store.getAll();
+			request.onsuccess = async function() {
+				let projects = request.result;
+				for (let project of projects) {
+					try {
+						let parsed_content = JSON.parse(project.data);
+						setupProject(Formats[parsed_content.meta.model_format] || Formats.free, project.uuid);
+						Codecs.project.parse(parsed_content, 'backup.bbmodel');
+						await new Promise(r => setTimeout(r, 40));
+					} catch(err) {
+						console.error(err);
+					}
+				}
+				resolve();
+			}
+			request.onerror = function(e) {
+				console.error(e);
+				reject(e);
+			}
+		})
+		/*var backup_models = localStorage.getItem('backup_model')
+		let parsed_backup_models = JSON.parse(backup_models);
+		for (let uuid in parsed_backup_models) {
+			AutoBackupModels[uuid] = parsed_backup_models[uuid];
+
+			let model = parsed_backup_models[uuid];
+			setupProject(Formats[model.meta.model_format] || Formats.free, uuid);
+			Codecs.project.parse(model, 'backup.bbmodel')
+		}*/
+	},
+	async removeBackup(uuid) {
+		let transaction = AutoBackup.db.transaction('projects', 'readwrite');
+		let store = transaction.objectStore('projects');
+		let request = store.delete(uuid);
+		
+		return await new Promise((resolve, reject) => {
+			request.onsuccess = resolve;
+			request.onerror = function(e) {
+				reject();
+			}
+		});
+	},
+	async removeAllBackups() {
+		let transaction = AutoBackup.db.transaction('projects', 'readwrite');
+		let store = transaction.objectStore('projects');
+		let request = store.clear();
+		
+		return await new Promise((resolve, reject) => {
+			request.onsuccess = resolve;
+			request.onerror = function(e) {
+				console.error(e);
+				reject();
+			}
+		});
+	}
+}
+
+
 setInterval(function() {
 	if (Project && (Outliner.root.length || Project.textures.length)) {
 		Validator.validate();
 		try {
-			var model = Codecs.project.compile({compressed: false, backup: true, raw: true});
-			AutoBackupModels[Project.uuid] = model;
-			localStorage.setItem('backup_model', JSON.stringify(AutoBackupModels));
+			AutoBackup.backupOpenProject();
 		} catch (err) {
 			console.error('Unable to create backup. ', err)
 		}
@@ -288,6 +426,15 @@ function factoryResetAndReload() {
 		console.log('Cleared Local Storage');
 		window.location.reload(true);
 	}
+}
+
+function benchmarkCode(id, iterations, code) {
+	if (!iterations) iterations = 1000;
+	console.time(id);
+	for (let i = 0; i < iterations; i++) {
+		code();
+	}
+	console.timeEnd(id);
 }
 
 const documentReady = new Promise((resolve, reject) => {

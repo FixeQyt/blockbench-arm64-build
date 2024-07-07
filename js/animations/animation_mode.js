@@ -876,6 +876,26 @@ const WinterskyScene = new Wintersky.Scene({
 				return filePath;
 			}
 		}
+	},
+	async fetchParticleFile(identifier, config) {
+		if (!identifier || !config.file_path || !isApp) return;
+
+		let path_segments = config.file_path.split(/[\\/]+/);
+		let index = path_segments.lastIndexOf('particles');
+		let base_path = path_segments.slice(0, index+1).join(PathModule.sep);
+
+		let prio_name = identifier.split(':')[1];
+		let find_options = {
+			filter_regex: /\.json$/i,
+			priority_regex: prio_name ? new RegExp(prio_name, 'i') : undefined,
+			read_file: true,
+			json: true
+		};
+		return Blockbench.findFileFromContent([base_path], find_options, (file_path, json) => {
+			if (json?.particle_effect?.description?.identifier == identifier) {
+				return {json, file_path};
+			}
+		});
 	}
 });
 WinterskyScene.global_options.scale = 16;
@@ -1270,6 +1290,7 @@ Interface.definePanels(function() {
 		icon: 'fas.fa-stream',
 		condition: {modes: ['animate']},
 		growable: true,
+		resizable: true,
 		default_position: {
 			slot: 'left_bar',
 			float_position: [0, 0],
@@ -1394,6 +1415,7 @@ Interface.definePanels(function() {
 						if (document.exitPointerLock) document.exitPointerLock()
 						removeEventListeners(document, 'mousemove touchmove', move);
 						removeEventListeners(document, 'mouseup touchend', off);
+						Blockbench.setStatusBarText();
 					}
 					addEventListeners(document, 'mouseup touchend', off);
 					addEventListeners(document, 'mousemove touchmove', move);

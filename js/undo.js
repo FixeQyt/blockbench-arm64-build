@@ -60,11 +60,13 @@ class UndoSystem {
 		}
 		return entry;
 	}
-	cancelEdit() {
+	cancelEdit(revert_changes = true) {
 		if (!this.current_save) return;
-		Canvas.outlines.children.empty();
 		this.startChange();
-		this.loadSave(this.current_save, new UndoSystem.save(this.current_save.aspects))
+		if (revert_changes) {
+			Canvas.outlines.children.empty();
+			this.loadSave(this.current_save, new UndoSystem.save(this.current_save.aspects))
+		}
 		delete this.current_save;
 	}
 	closeAmendEditMenu() {
@@ -147,7 +149,7 @@ class UndoSystem {
 
 			} else if (this.amend_edit_menu.form[key].type == 'checkbox') {
 				
-				let toggle = Interface.createElement('input', {type: 'checkbox', checked: !!form_line.value});
+				let toggle = Interface.createElement('input', {type: 'checkbox', checked: form_line.value ? true : undefined});
 				toggle.addEventListener('input', updateValue);
 				line.append(toggle);
 				input_elements[key] = toggle;
@@ -537,6 +539,9 @@ class UndoSystem {
 		if ((save.outliner || save.group) && Format.bone_rig) {
 			Canvas.updateAllBones();
 		}
+		if (save.outliner && Format.per_group_texture) {
+			Canvas.updateAllFaces();
+		}
 		if (Modes.animate) {
 			Animator.preview();
 		}
@@ -656,6 +661,8 @@ UndoSystem.save = class {
 		if (aspects.exploded_view !== undefined) {
 			this.exploded_view = !!aspects.exploded_view;
 		}
+
+		Blockbench.dispatchEvent('create_undo_save', {save: this, aspects})
 	}
 	addTexture(texture) {
 		if (!this.textures) return;
@@ -695,7 +702,6 @@ BARS.defineActions(function() {
 		icon: 'undo',
 		category: 'edit',
 		condition: () => Project,
-		work_in_dialog: true,
 		keybind: new Keybind({key: 'z', ctrl: true}),
 		click(e) {
 			Project.undo.undo(e);
@@ -705,7 +711,6 @@ BARS.defineActions(function() {
 		icon: 'redo',
 		category: 'edit',
 		condition: () => Project,
-		work_in_dialog: true,
 		keybind: new Keybind({key: 'y', ctrl: true}),
 		click(e) {
 			Project.undo.redo(e);
@@ -716,7 +721,6 @@ BARS.defineActions(function() {
 		category: 'edit',
 		condition: () => Project,
 		click() {
-
 			let steps = [];
 			Undo.history.forEachReverse((entry, index) => {
 				index++;

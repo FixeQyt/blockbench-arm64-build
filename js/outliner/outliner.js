@@ -376,12 +376,20 @@ class OutlinerElement extends OutlinerNode {
 		this.menu.open(event, this)
 		return this;
 	}
-	forSelected(fc, undo_tag) {
+	forSelected(fc, undo_tag, selection_method) {
 		let selected = this.constructor.selected;
 		if (selected.length <= 1 || !selected.includes(this)) {
 			var edited = [this];
 		} else {
 			var edited = selected;
+		}
+		if (selection_method == 'all_in_group') {
+			edited = edited.slice();
+			edited.slice().forEach(element => {
+				element.getParentArray().forEach(child => {
+					if (child.faces) edited.safePush(child);
+				})
+			})
 		}
 		if (typeof fc === 'function') {
 			if (undo_tag) {
@@ -420,14 +428,14 @@ class OutlinerElement extends OutlinerNode {
 		TickUpdates.selection = true;
 		return copy;
 	}
-	select(event, isOutlinerClick) {
+	select(event, is_outliner_click) {
 		if (Modes.animate && !this.constructor.animator) {
 			Blockbench.showQuickMessage('message.group_required_to_animate');
 			return false;
 		}
-		//Shiftv
+		//Shift
 		var just_selected = []
-		if (event && (event.shiftKey === true || Pressing.overrides.shift) && this.getParentArray().includes(selected[selected.length-1]) && !Modes.paint && isOutlinerClick) {
+		if (event && (event.shiftKey === true || Pressing.overrides.shift) && this.getParentArray().includes(selected[selected.length-1]) && !Modes.paint && is_outliner_click) {
 			var starting_point;
 			var last_selected = selected[selected.length-1]
 			this.getParentArray().forEach((s, i) => {
@@ -470,7 +478,9 @@ class OutlinerElement extends OutlinerNode {
 
 		//Normal
 		} else {
-			selected.forEachReverse(obj => obj.unselect())
+			selected.forEachReverse(obj => {
+				if (obj != this) obj.unselect();
+			})
 			if (Group.selected) Group.selected.unselect()
 			this.selectLow()
 			just_selected.push(this)
@@ -495,6 +505,9 @@ class OutlinerElement extends OutlinerNode {
 	unselect() {
 		Project.selected_elements.remove(this);
 		this.selected = false;
+		if (UVEditor.selected_element_faces[this.uuid]) {
+			delete UVEditor.selected_element_faces[this.uuid];
+		}
 		TickUpdates.selection = true;
 		return this;
 	}
@@ -547,7 +560,7 @@ class NodePreviewController extends EventSystem {
 		this.updateGeometry = null;
 		this.updateUV = null;
 		this.updateFaces = null;
-		this.updatePaintingGrid = null;
+		this.updatePixelGrid = null;
 		this.updateHighlight = null;
 
 		Object.assign(this, data);
@@ -585,7 +598,7 @@ class NodePreviewController extends EventSystem {
 		if (this.updateGeometry) this.updateGeometry(element);
 		if (this.updateUV) this.updateUV(element);
 		if (this.updateFaces) this.updateFaces(element);
-		if (this.updatePaintingGrid) this.updatePaintingGrid(element);
+		if (this.updatePixelGrid) this.updatePixelGrid(element);
 
 		this.dispatchEvent('update_all', {element});
 	}
@@ -992,12 +1005,12 @@ SharedActions.add('delete', {
 	condition: () => ((Modes.edit || Modes.paint) && (selected.length || Group.selected)),
 	priority: -1,
 	run() {
-		var array;
-		Undo.initEdit({elements: selected, outliner: true, selection: true})
 		if (Group.selected) {
 			Group.selected.remove(true)
 			return;
 		}
+		let array;
+		Undo.initEdit({elements: selected, outliner: true, selection: true})
 		if (array == undefined) {
 			array = selected.slice(0)
 		} else if (array.constructor !== Array) {
@@ -1019,9 +1032,44 @@ SharedActions.add('duplicate', {
 	run() {
 		let cubes_before = elements.length;
 		Undo.initEdit({outliner: true, elements: [], selection: true});
-		let g = Group.selected.duplicate();
-		g.select();
-		Undo.finishEdit('Duplicate group', {outliner: true, elements: elements.slice().slice(cubes_before), selection: true})
+		let original = Group.selected;
+		let all_original = [];
+		Group.selected.forEachChild(g => all_original.push(g), Group, true);
+
+		let new_group = Group.selected.duplicate();
+		let all_new = [];
+		new_group.forEachChild(g => all_new.push(g), Group, true);
+		new_group.select();
+
+		Undo.finishEdit('Duplicate group', {outliner: true, elements: elements.slice().slice(cubes_before), selection: true});
+
+		if (Animation.all.length) {
+			let affected_anims = Animation.all.filter(a => all_original.find(bone => a.animators[bone.uuid]?.keyframes.length));
+			if (affected_anims) {
+				Blockbench.showMessageBox({
+					translateKey: 'duplicate_bone_copy_animation',
+					message: tl('message.duplicate_bone_copy_animation.message', [affected_anims.length]),
+					buttons: ['dialog.yes', 'dialog.no'],
+				}, result => {
+					if (result == 1) return;
+
+					Undo.initEdit({animations: affected_anims});
+					for (let animation of affected_anims) {
+						for (let i = 0; i < all_original.length; i++) {
+							let orig_animator = animation.animators[all_original[i].uuid];
+							if (!orig_animator) continue;
+							let new_animator = animation.getBoneAnimator(all_new[i]);
+		
+							new_animator.rotation_global = orig_animator.rotation_global;
+							for (let kf of orig_animator.keyframes) {
+								new_animator.addKeyframe(kf);
+							}
+						}
+					}
+					Undo.finishEdit('Copy animations of duplicated bones');
+				})
+			}
+		}
 	}
 })
 SharedActions.add('duplicate', {
@@ -1354,7 +1402,7 @@ Interface.definePanels(function() {
 				v-bind:style="{'padding-left': indentation + 'px'}"
 				@contextmenu.prevent.stop="node.showContextMenu($event)"
 				@click="node.select($event, true)"
-				@touchstart="node.select($event)" :title="node.title"
+				:title="node.title"
 				@dblclick.stop.self="!node.locked && renameOutliner()"
 			>` +
 				//Opener
@@ -1490,6 +1538,7 @@ Interface.definePanels(function() {
 			})
 		],
 		growable: true,
+		resizable: true,
 		onResize() {
 			if (this.inside_vue) this.inside_vue.width = this.width;
 		},
@@ -1522,8 +1571,10 @@ Interface.definePanels(function() {
 					let key = e1.target.getAttribute('toggle');
 					let previous_values = {};
 					let value = original[key];
+					let toggle_config = Outliner.buttons[key];
 					value = (typeof value == 'number') ? (value+1) % 3 : !value;
 
+					if (!toggle_config) return;
 					if (!(key == 'locked' || key == 'visibility' || Modes.edit)) return;
 
 					function move(e2) {
@@ -1544,11 +1595,15 @@ Interface.definePanels(function() {
 							} else if (!affected.includes(node) && (!node.locked || key == 'locked' || key == 'visibility')) {
 								let new_affected = [node];
 								if (node instanceof Group) {
-									node.forEachChild(node => new_affected.push(node))
+									if (toggle_config.change_children != false) {
+										node.forEachChild(node => {
+											if (node.buttons.find(b => b.id == key)) new_affected.push(node)
+										});
+									}
 									affected_groups.push(node);
-								} else if (node.selected && selected.length > 1) {
-									selected.forEach(el => {
-										if (node[key] != undefined) new_affected.safePush(el);
+								} else if (node.selected && Outliner.selected.length > 1) {
+									Outliner.selected.forEach(el => {
+										if (el.buttons.find(b => b.id == key)) new_affected.safePush(el);
 									})
 								}
 								new_affected.forEach(node => {
@@ -1827,14 +1882,16 @@ class Face {
 		return this;
 	}
 	getTexture() {
-		if (Format.single_texture && this.texture !== null) {
+		if (Format.per_group_texture && this.element.parent instanceof Group && this.element.parent.texture) {
+			return Texture.all.findInArray('uuid', this.element.parent.texture);
+		}
+		if (this.texture !== null && (Format.single_texture || (Format.single_texture_default && (Format.per_group_texture || !this.texture)))) {
 			return Texture.getDefault();
 		}
 		if (typeof this.texture === 'string') {
 			return Texture.all.findInArray('uuid', this.texture)
-		} else {
-			return this.texture;
 		}
+		return this.texture;
 	}
 	reset() {
 		for (var key in Mesh.properties) {
@@ -1844,13 +1901,13 @@ class Face {
 		return this;
 	}
 	getSaveCopy(project) {
-		var copy = {
+		let copy = {
 			uv: this.uv,
 		}
-		for (var key in this.constructor.properties) {
+		for (let key in this.constructor.properties) {
 			if (this[key] != this.constructor.properties[key].default) this.constructor.properties[key].copy(this, copy);
 		}
-		var tex = this.getTexture()
+		let tex = this.getTexture()
 		if (tex === null) {
 			copy.texture = null;
 		} else if (tex instanceof Texture && project) {

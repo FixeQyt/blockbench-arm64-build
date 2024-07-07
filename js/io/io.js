@@ -9,7 +9,7 @@ function setupDragHandlers() {
 	)
 	Blockbench.addDragHandler(
 		'reference_image',
-		{extensions: ['jpg', 'jpeg', 'bmp', 'tiff', 'tif', 'gif'], propagate: true, readtype: 'image', condition: () => Project && !Dialog.open},
+		{extensions: ReferenceImage.supported_extensions, propagate: true, readtype: 'image', condition: () => Project && !Dialog.open},
 		function(files, event) {
 			files.map(file => {
 				return new ReferenceImage({
@@ -106,6 +106,10 @@ async function loadImages(files, event) {
 	})
 
 	// Options
+	if (event == undefined) {
+		// When using "Open with > Blockbench", ensure these are listed first
+		options.edit = null;
+	}
 	if (Project && texture_li && texture_li.length) {
 		replace_texture = Texture.all.findInArray('uuid', texture_li.attr('texid'))
 		if (replace_texture) {
@@ -143,7 +147,7 @@ async function loadImages(files, event) {
 			let new_textures = [];
 			Undo.initEdit({textures: new_textures});
 			files.forEach(function(f, i) {
-				let tex = new Texture().fromFile(f).add().fillParticle();
+				let tex = new Texture().fromFile(f).add(false, true).fillParticle();
 				new_textures.push(tex);
 				if (Format.image_editor && i == 0) {
 					tex.select();
